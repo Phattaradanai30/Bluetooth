@@ -6,6 +6,7 @@ import {
   Platform,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -19,7 +20,7 @@ import { BleManager, Device } from 'react-native-ble-plx';
 
 const manager = Platform.OS !== 'web' ? new BleManager() : null;
 
-// UUIDs สำหรับเชื่อมต่อ BLE Device
+// UUIDs (ตรวจสอบให้ตรงกับใน ESP32 / Microcontroller)
 const SERVICE_UUID = 'aee04821-1973-4e1f-a590-e84b10d580e7';
 const CHAR_UUID = 'cde07b1a-889b-44b7-a99f-c888dddac729';
 
@@ -28,7 +29,7 @@ export default function Index() {
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
 
-  // States สำหรับเก็บข้อมูลแต่ละขั้นตอน
+  // States
   const [initialData, setInitialData] = useState<string>('');
   const [myName, setMyName] = useState<string>('');
   const [buddyName, setBuddyName] = useState<string>('');
@@ -69,32 +70,35 @@ export default function Index() {
     };
   }, []);
 
-  // สแกนค้นหาอุปกรณ์ BLE
   const startScan = () => {
     if (!manager) return;
     setDevices([]);
     setIsScanning(true);
+
     manager.startDeviceScan(null, null, (error, device) => {
       if (error) {
         setIsScanning(false);
         return;
       }
-      if (device && device.name) {
+      if (device) {
         setDevices((prev) => {
-          if (prev.some((d) => d.id === device.id)) return prev;
+          const index = prev.findIndex((d) => d.id === device.id);
+          if (index > -1) {
+            const updated = [...prev];
+            updated[index] = device;
+            return updated;
+          }
           return [...prev, device];
         });
       }
     });
 
-    // หยุดสแกนอัตโนมัติเมื่อครบ 10 วินาที
     setTimeout(() => {
       if (manager) manager.stopDeviceScan();
       setIsScanning(false);
     }, 10000);
   };
 
-  // เชื่อมต่ออุปกรณ์
   const connectToDevice = async (device: Device) => {
     if (!manager) return;
     manager.stopDeviceScan();
@@ -108,7 +112,6 @@ export default function Index() {
     }
   };
 
-  // Step 1: Read Characteristic Value ครั้งแรก
   const readInitialValue = async () => {
     if (!connectedDevice || !manager) return;
     try {
@@ -119,16 +122,15 @@ export default function Index() {
       );
       const rawData = Buffer.from(characteristic.value || '', 'base64').toString('utf-8');
       setInitialData(rawData || '(Empty Value)');
-    } catch (error) {
-      Alert.alert('Read Error', 'Failed to read characteristic value.');
+    } catch (error: any) {
+      Alert.alert('Read Error', error?.message || 'Failed to read characteristic value.');
     }
   };
 
-  // Step 2: Write Value (Your name and your buddy)
   const writeNamesValue = async () => {
     if (!connectedDevice || !manager) return;
     if (!myName.trim() || !buddyName.trim()) {
-      Alert.alert('Missing Input', 'Please enter both your name and your buddy\'s name.');
+      Alert.alert('Missing Input', "Please enter both your name and your buddy's name.");
       return;
     }
 
@@ -136,20 +138,31 @@ export default function Index() {
       const payload = `${myName.trim()} & ${buddyName.trim()}`;
       const base64Value = Buffer.from(payload, 'utf-8').toString('base64');
 
-      await manager.writeCharacteristicWithResponseForDevice(
-        connectedDevice.id,
-        SERVICE_UUID,
-        CHAR_UUID,
-        base64Value
-      );
+      try {
+        // ลองใช้ Write With Response ก่อน
+        await manager.writeCharacteristicWithResponseForDevice(
+          connectedDevice.id,
+          SERVICE_UUID,
+          CHAR_UUID,
+          base64Value
+        );
+      } catch (e) {
+        // ถ้าบอร์ดเปิดสิทธิ์เฉพาะ Without Response ให้สลับมาใช้คำสั่งนี้แทน
+        await manager.writeCharacteristicWithoutResponseForDevice(
+          connectedDevice.id,
+          SERVICE_UUID,
+          CHAR_UUID,
+          base64Value
+        );
+      }
+
       setWrittenData(payload);
       Alert.alert('Success', 'Names written to device successfully!');
-    } catch (error) {
-      Alert.alert('Write Error', 'Failed to write names to device.');
+    } catch (error: any) {
+      Alert.alert('Write Error', error?.message || 'Failed to write names to device.');
     }
   };
 
-  // Step 3: Read Characteristic Value อีกครั้งเพื่อ Predict Grade
   const readAgainAndPredictGrade = async () => {
     if (!connectedDevice || !manager) return;
     try {
@@ -161,18 +174,16 @@ export default function Index() {
       const rawData = Buffer.from(characteristic.value || '', 'base64').toString('utf-8');
       setFinalData(rawData || '(Empty Value)');
 
-      // ระบบทำนายเกรด (คำนวณจากความยาวของชื่อทั้งสองคนและค่าที่อ่านได้)
       const gradeList = ['A', 'B+', 'B', 'C+', 'C', 'D+', 'A'];
       const scoreSeed = myName.length * 3 + buddyName.length * 7 + rawData.length;
       const predicted = gradeList[scoreSeed % gradeList.length];
 
       setPredictedGrade(predicted);
-    } catch (error) {
-      Alert.alert('Read Error', 'Failed to read characteristic value.');
+    } catch (error: any) {
+      Alert.alert('Read Error', error?.message || 'Failed to read characteristic value.');
     }
   };
 
-  // ตัดการเชื่อมต่อ
   const disconnectDevice = async () => {
     if (!connectedDevice || !manager) return;
     await manager.cancelDeviceConnection(connectedDevice.id);
@@ -187,44 +198,58 @@ export default function Index() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A1635" />
+
+      {/* Decorative Night Stars Background */}
+      <View style={styles.star1} />
+      <View style={styles.star2} />
+      <View style={styles.star3} />
+
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>bluetooth Device is ready to pair</Text>
+        <Text style={styles.greetingText}>✨ Night Sky BLE Predictor</Text>
+        <Text style={styles.headerTitle}>Grade Predictor</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.container}>
         {!connectedDevice ? (
           <View style={styles.scanSection}>
             <TouchableOpacity
-              style={[styles.mainButton, isScanning && styles.disabledButton]}
+              style={[styles.mainCapsuleButton, isScanning && styles.disabledButton]}
               onPress={startScan}
               disabled={isScanning}
             >
               <Text style={styles.mainButtonText}>
-                {isScanning ? 'Scanning Devices...' : 'Scan Bluetooth Devices'}
+                {isScanning ? '✦ Scanning Devices...' : '✦ Scan Bluetooth Devices'}
               </Text>
             </TouchableOpacity>
 
-            <Text style={styles.sectionSubtitle}>Available Devices:</Text>
+            <Text style={styles.sectionSubtitle}>Available Devices</Text>
             {devices.map((item) => (
               <TouchableOpacity
                 key={item.id}
                 style={styles.deviceCard}
                 onPress={() => connectToDevice(item)}
               >
-                <View>
-                  <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
+                <View style={styles.deviceInfo}>
+                  <Text style={styles.deviceName}>
+                    {item.name || item.localName || 'Unknown Device'}
+                  </Text>
                   <Text style={styles.deviceId}>{item.id}</Text>
                 </View>
-                <Text style={styles.connectBadge}>Connect ➔</Text>
+                <View style={styles.connectBadge}>
+                  <Text style={styles.connectBadgeText}>Connect ➔</Text>
+                </View>
               </TouchableOpacity>
             ))}
           </View>
         ) : (
           <View style={styles.dashboard}>
-            {/* Status Header */}
+            {/* Status Card */}
             <View style={styles.statusCard}>
-              <Text style={styles.connectedText}>🟢 Connected to</Text>
-              <Text style={styles.connectedName}>{connectedDevice.name || 'BLE Device'}</Text>
+              <Text style={styles.connectedStatusText}>✦ CONNECTED TO ✦</Text>
+              <Text style={styles.connectedName}>
+                {connectedDevice.name || connectedDevice.localName || 'BLE Device'}
+              </Text>
             </View>
 
             {/* STEP 1 */}
@@ -253,18 +278,18 @@ export default function Index() {
               <TextInput
                 style={styles.input}
                 placeholder="Your Name"
-                placeholderTextColor="#999"
+                placeholderTextColor="#A098C4"
                 value={myName}
                 onChangeText={setMyName}
               />
               <TextInput
                 style={styles.input}
                 placeholder="Buddy's Name"
-                placeholderTextColor="#999"
+                placeholderTextColor="#A098C4"
                 value={buddyName}
                 onChangeText={setBuddyName}
               />
-              <TouchableOpacity style={[styles.actionButton, styles.writeButton]} onPress={writeNamesValue}>
+              <TouchableOpacity style={styles.actionButton} onPress={writeNamesValue}>
                 <Text style={styles.actionButtonText}>✍️ Write Names to Device</Text>
               </TouchableOpacity>
               {writtenData !== '' && (
@@ -281,8 +306,8 @@ export default function Index() {
                 <Text style={styles.stepBadgeText}>Step 3</Text>
               </View>
               <Text style={styles.cardTitle}>Read Again & Predict Grade</Text>
-              <TouchableOpacity style={[styles.actionButton, styles.predictButton]} onPress={readAgainAndPredictGrade}>
-                <Text style={styles.actionButtonText}>🔮 Read & Predict Grade!</Text>
+              <TouchableOpacity style={styles.predictButton} onPress={readAgainAndPredictGrade}>
+                <Text style={styles.predictButtonText}>🔮 Read & Predict Grade!</Text>
               </TouchableOpacity>
 
               {finalData !== '' && (
@@ -305,7 +330,7 @@ export default function Index() {
 
             {/* Disconnect Button */}
             <TouchableOpacity style={styles.disconnectButton} onPress={disconnectDevice}>
-              <Text style={styles.disconnectText}>❌ Disconnect Device</Text>
+              <Text style={styles.disconnectText}>✕ Disconnect Device</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -315,118 +340,261 @@ export default function Index() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#F4F6F9' },
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#1A162B',
+  },
+  star1: {
+    position: 'absolute',
+    top: 60,
+    right: 40,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#FFF',
+    opacity: 0.8,
+  },
+  star2: {
+    position: 'absolute',
+    top: 140,
+    left: 30,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#E8D7F6',
+    opacity: 0.6,
+  },
+  star3: {
+    position: 'absolute',
+    top: 250,
+    right: 80,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#FFF',
+    opacity: 0.5,
+  },
   header: {
-    paddingVertical: 18,
-    backgroundColor: '#ffa66e',
+    paddingTop: 24,
+    paddingBottom: 12,
+    alignItems: 'center',
+  },
+  greetingText: {
+    fontSize: 14,
+    color: '#BDB3E2',
+    letterSpacing: 0.5,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '300',
+    color: '#F3EBF9',
+    marginTop: 4,
+  },
+  container: {
+    padding: 20,
+  },
+  scanSection: {
+    gap: 16,
+  },
+  mainCapsuleButton: {
+    backgroundColor: '#F3EBF9',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 30,
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFF' },
-  container: { padding: 16 },
-  scanSection: { gap: 15 },
-  mainButton: {
-    backgroundColor: '#0b0c0c',
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
+  disabledButton: {
+    backgroundColor: '#8C82B3',
   },
-  disabledButton: { backgroundColor: '#A0C4FF' },
-  mainButtonText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  sectionSubtitle: { fontSize: 16, fontWeight: '600', color: '#444', marginTop: 10 },
+  mainButtonText: {
+    color: '#1A162B',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  sectionSubtitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#BDB3E2',
+    marginTop: 10,
+    letterSpacing: 0.5,
+  },
   deviceCard: {
-    backgroundColor: '#FFF',
-    padding: 14,
-    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    padding: 16,
+    borderRadius: 16,
     marginVertical: 4,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E1E8ED',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
   },
-  deviceName: { fontSize: 15, fontWeight: 'bold', color: '#333' },
-  deviceId: { fontSize: 12, color: '#888', marginTop: 2 },
-  connectBadge: { fontSize: 13, color: '#4A90E2', fontWeight: '600' },
-  dashboard: { gap: 16 },
+  deviceInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
+  deviceName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#F3EBF9',
+  },
+  deviceId: {
+    fontSize: 12,
+    color: '#A098C4',
+    marginTop: 2,
+  },
+  connectBadge: {
+    backgroundColor: 'rgba(232, 215, 246, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  connectBadgeText: {
+    fontSize: 12,
+    color: '#E8D7F6',
+    fontWeight: '600',
+  },
+  dashboard: {
+    gap: 16,
+  },
   statusCard: {
-    backgroundColor: '#E3F2FD',
-    padding: 14,
-    borderRadius: 10,
+    backgroundColor: 'rgba(232, 215, 246, 0.12)',
+    padding: 16,
+    borderRadius: 20,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#BBDEFB',
+    borderColor: 'rgba(232, 215, 246, 0.25)',
   },
-  connectedText: { fontSize: 12, color: '#1976D2', fontWeight: '500' },
-  connectedName: { fontSize: 18, fontWeight: 'bold', color: '#0D47A1', marginTop: 2 },
+  connectedStatusText: {
+    fontSize: 11,
+    color: '#C4B9E6',
+    letterSpacing: 1.5,
+    fontWeight: '600',
+  },
+  connectedName: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#F3EBF9',
+    marginTop: 4,
+  },
   card: {
-    backgroundColor: '#FFF',
-    padding: 16,
-    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    padding: 18,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#E1E8ED',
-    gap: 10,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    gap: 12,
     position: 'relative',
   },
   stepBadge: {
     position: 'absolute',
-    top: 12,
-    right: 12,
-    backgroundColor: '#F0F4F8',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    top: 16,
+    right: 16,
+    backgroundColor: 'rgba(232, 215, 246, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
-  stepBadgeText: { fontSize: 11, fontWeight: 'bold', color: '#64748B' },
-  cardTitle: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
+  stepBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#E8D7F6',
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#F3EBF9',
+  },
   input: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    padding: 10,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 12,
+    padding: 12,
     fontSize: 14,
-    color: '#0F172A',
+    color: '#FFF',
   },
   actionButton: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: 'rgba(232, 215, 246, 0.2)',
     paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  writeButton: { backgroundColor: '#8B5CF6' },
-  predictButton: { backgroundColor: '#10B981' },
-  actionButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
-  resultBox: {
-    backgroundColor: '#F1F5F9',
-    padding: 10,
-    borderRadius: 6,
-    marginTop: 4,
-  },
-  resultLabel: { fontSize: 11, color: '#64748B', fontWeight: '600' },
-  resultData: { fontSize: 14, color: '#0F172A', fontWeight: 'bold', marginTop: 2 },
-  gradeContainer: {
-    backgroundColor: '#ECFDF5',
-    padding: 16,
     borderRadius: 12,
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#10B981',
-    marginTop: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(232, 215, 246, 0.3)',
   },
-  gradeHeader: { fontSize: 14, color: '#047857', fontWeight: 'bold' },
-  gradeText: { fontSize: 44, fontWeight: '800', color: '#065F46', marginVertical: 4 },
-  gradeSubtext: { fontSize: 13, color: '#059669', fontWeight: '500' },
-  disconnectButton: {
-    backgroundColor: '#EF4444',
-    padding: 14,
-    borderRadius: 10,
+  actionButtonText: {
+    color: '#F3EBF9',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  predictButton: {
+    backgroundColor: '#F3EBF9',
+    paddingVertical: 14,
+    borderRadius: 30,
     alignItems: 'center',
+  },
+  predictButtonText: {
+    color: '#1A162B',
+    fontWeight: 'bold',
+    fontSize: 15,
+  },
+  resultBox: {
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 4,
+  },
+  resultLabel: {
+    fontSize: 11,
+    color: '#A098C4',
+  },
+  resultData: {
+    fontSize: 14,
+    color: '#F3EBF9',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  gradeContainer: {
+    backgroundColor: 'rgba(232, 215, 246, 0.15)',
+    padding: 18,
+    borderRadius: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(232, 215, 246, 0.4)',
     marginTop: 8,
   },
-  disconnectText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
+  gradeHeader: {
+    fontSize: 13,
+    color: '#D2C7E8',
+    letterSpacing: 0.5,
+  },
+  gradeText: {
+    fontSize: 48,
+    fontWeight: '300',
+    color: '#FFF',
+    marginVertical: 4,
+  },
+  gradeSubtext: {
+    fontSize: 13,
+    color: '#E8D7F6',
+  },
+  disconnectButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    padding: 14,
+    borderRadius: 30,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  disconnectText: {
+    color: '#FCA5A5',
+    fontWeight: '600',
+    fontSize: 14,
+  },
 });
